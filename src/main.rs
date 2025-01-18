@@ -436,7 +436,10 @@ mod static_containers {
         ($($elem:expr),* $(,)?; $capacity:expr) => {{
             const CAPACITY: usize = $capacity;
             use crate::count_elements;
-            assert!(CAPACITY >= count_elements!($($elem),*), "MY_CONSTANT must be 10");
+            const COUNT: usize = count_elements!($($elem),*);
+            assert!(CAPACITY >= COUNT,
+                "capacity (is {}) must be bigger than elements count (is {})",
+                CAPACITY, COUNT);
             let array = [$($elem),*].as_slice();
             || -> $crate::static_containers::StaticVector<_, CAPACITY>
             {
