@@ -2,7 +2,7 @@ mod static_containers {
 
     use std::{
         mem::MaybeUninit,
-        ops::{Deref, DerefMut},
+        ops::{Deref, DerefMut}
     };
 
     type StorageType<T, const N: usize> = [MaybeUninit<T>; N];
@@ -52,7 +52,7 @@ mod static_containers {
             if self.is_empty() {
                 &[]
             } else {
-                unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
+                unsafe { std::slice::from_raw_parts(self.storage[0].assume_init_ref(), self.len) }
             }
         }
 
@@ -61,15 +61,26 @@ mod static_containers {
             if self.is_empty() {
                 &mut []
             } else {
-                unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+                unsafe { std::slice::from_raw_parts_mut(self.storage[0].as_mut_ptr(), self.len) }
+            }
+        }
+
+        #[inline]
+        fn unchecked_pop(&mut self) -> T {
+            self.len -= 1;
+            unsafe {
+                let last = self.storage.as_ptr().add(self.len);
+                last.read().assume_init()
             }
         }
 
         #[inline]
         pub fn pop(&mut self) -> Option<T> {
-            let last_uninit = self.storage[..self.len].last()?;
-            self.len -= 1;
-            Some(unsafe { last_uninit.assume_init_read() })
+            if self.is_empty() {
+                None
+            } else {
+                Some(self.unchecked_pop())
+            }
         }
 
         #[inline]
@@ -141,38 +152,25 @@ mod static_containers {
         #[inline]
         pub fn remove(&mut self, index: usize) -> T {
             let len = self.len();
-            if index >= len {
+            if (..self.len).contains(&index) {
+                unsafe { self.get_unchecked_mut(index..) }.rotate_left(1);
+                self.unchecked_pop()
+            } else {
                 panic!("removal index (is {index}) should be < len (is {len})");
-            }
-
-            unsafe {
-                let ret;
-                {
-                    let ptr = self.storage.as_mut_ptr().add(index);
-                    ret = ptr.read().assume_init();
-                    std::ptr::copy(ptr.add(1), ptr, len - index - 1);
-                }
-                self.len = len - 1;
-                ret
             }
         }
 
         #[inline]
         pub fn remove_swap(&mut self, index: usize) -> T {
             let len = self.len();
-            if index >= len {
+            if index < len {
+                let range = unsafe { self.get_unchecked_mut(index..) };
+                let first = range.as_mut_ptr();
+                let last = unsafe { first.add(range.len() - 1) };
+                unsafe { std::ptr::swap(first, last) };
+                self.unchecked_pop()
+            } else {
                 panic!("removal index (is {index}) should be < len (is {len})");
-            }
-
-            unsafe {
-                let ret;
-                {
-                    let ptr = self.storage.as_mut_ptr().add(index);
-                    ret = ptr.read().assume_init();
-                    std::ptr::copy(ptr.add(len - 1), ptr, 1);
-                }
-                self.len = len - 1;
-                ret
             }
         }
 
@@ -273,9 +271,9 @@ mod static_containers {
 
         #[inline]
         fn next(&mut self) -> Option<Self::Item> {
-            let next_uninit = self.storage[0..self.len].get(self.index)?.as_ptr();
+            let next_uninit = self.storage[..self.len].get(self.index)?;
             self.index += 1;
-            Some(unsafe { next_uninit.read() })
+            Some(unsafe { next_uninit.assume_init_read() })
         }
     }
 
@@ -304,7 +302,7 @@ mod static_containers {
                 true => &[],
                 false => unsafe {
                     let ptr = self.storage.get_unchecked(0);
-                    std::slice::from_raw_parts(ptr.as_ptr(), self.len)
+                    std::slice::from_raw_parts(ptr.assume_init_ref(), self.len)
                 },
             }
         }
@@ -594,6 +592,15 @@ mod static_vec_tests {
     }
 
     #[test]
+    fn test_remove_last() {
+        let mut vec = static_vec!["1".to_string()];
+
+        vec.remove(0);
+
+        assert!(vec.is_empty());
+    }
+
+    #[test]
     #[should_panic]
     fn test_remove_panic() {
         let mut vec = static_vec![
@@ -604,6 +611,74 @@ mod static_vec_tests {
         ];
 
         vec.remove(4);
+    }
+
+    
+    #[test]
+    fn test_remove_swap_front() {
+        let mut vec = static_vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string()
+        ];
+
+        let removed = vec.remove_swap(0);
+        assert_eq!(removed, "1");
+        assert_eq!(vec.len(), 3);
+        assert!(vec.iter().eq(["4", "2", "3"]));
+    }
+
+    #[test]
+    fn test_remove_swap_mid() {
+        let mut vec = static_vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string()
+        ];
+
+        let removed = vec.remove_swap(2);
+        assert_eq!(removed, "3");
+        assert_eq!(vec.len(), 3);
+        assert!(vec.iter().eq(["1", "2", "4"]));
+    }
+
+    #[test]
+    fn test_remove_swap_end() {
+        let mut vec = static_vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string()
+        ];
+
+        let removed = vec.remove_swap(3);
+        assert_eq!(removed, "4");
+        assert_eq!(vec.len(), 3);
+        assert!(vec.iter().eq(["1", "2", "3"]));
+    }
+
+    #[test]
+    fn test_remove_swap_last() {
+        let mut vec = static_vec!["1".to_string()];
+
+        vec.remove_swap(0);
+
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_remove_swap_panic() {
+        let mut vec = static_vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string()
+        ];
+
+        vec.remove_swap(4);
     }
 
     #[test]
@@ -636,15 +711,13 @@ mod static_vec_tests {
 
     #[test]
     #[should_panic]
-    fn test_resize_over_capacity()
-    {
+    fn test_resize_over_capacity() {
         let mut vec = static_vec![1, 2, 3, 4, 5; 10];
         vec.resize(12, 42);
     }
 
     #[test]
-    fn test_into_iter()
-    {
+    fn test_into_iter() {
         let vec = static_vec![1, 2, 3, 4; 10];
         let mut as_iter = vec.into_iter();
         assert_eq!(as_iter.next(), Some(1));
